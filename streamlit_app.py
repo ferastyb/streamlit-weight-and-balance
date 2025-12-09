@@ -12,13 +12,6 @@ WEBSITE_URL = "https://www.ferasaviation.info"
 
 # ---------- Aircraft presets (update with your real WBM data) ----------
 
-# NOTE:
-# • 737 values below use your provided example:
-#   NLG arm = 93 in, MLG arm = 706.822 in (from datum).
-# • 787 gear arms below are based on your provided data:
-#   NLG = 268 in, MLG FWD = 1137.30 in, MLG AFT = 1194.80 in (from datum).
-# • LEMAC / MAC for both types are placeholders – replace with WBM data.
-
 AIRCRAFT_PRESETS = {
     "Boeing 787": {
         "label": "Boeing 787",
@@ -26,11 +19,9 @@ AIRCRAFT_PRESETS = {
 
         # Real Boeing 787 gear arms (inches from datum)
         "nlg_arm": 268.0,          # Nose Landing Gear
-
         # MLG bogie positions (forward & aft) – left
         "lmlg_fwd_arm": 1137.30,
         "lmlg_aft_arm": 1194.80,
-
         # Assume symmetric right main gear
         "rmlg_fwd_arm": 1137.30,
         "rmlg_aft_arm": 1194.80,
@@ -43,7 +34,7 @@ AIRCRAFT_PRESETS = {
         "label": "Boeing 737",
         "type": "simple",     # NLG + LMLG + RMLG
 
-        # Values below based on your example data (inches from datum)
+        # Values based on your example data (inches from datum)
         "nlg_arm": 93.0,          # Nose Landing Gear arm (in)
         "lmlg_arm": 706.822,      # Main Landing Gear arm (in)
         "rmlg_arm": 706.822,      # Symmetric right MLG
@@ -200,12 +191,17 @@ def build_pdf_report(
     weighing_place: str,
     scales_cal_date: str,
     weighing_date: str,
+    wbm_reference: str,
+    weighed_by: str,
+    checked_by: str,
+    approved_by: str,
     # CG diagram image buffer:
     cg_diagram_png: Optional[BytesIO] = None,
 ) -> BytesIO:
     """
     Build a PDF weight & balance report and return it as an in-memory buffer.
-    Includes logo, aircraft details, weighing data, and CG diagram on the same page.
+    Includes logo, aircraft details, weighing data, CG diagram on the same page,
+    and signature blocks.
     """
     from reportlab.lib.pagesizes import A4
     from reportlab.pdfgen import canvas
@@ -239,10 +235,13 @@ def build_pdf_report(
         # If logo fails, we just skip it
         pass
 
-    # Header text to the right of logo, using selected aircraft_type
-    header_type = aircraft_type or "Boeing"
+    # Header text to the right of logo, fixed as "7x7"
     c.setFont("Helvetica-Bold", 16)
-    c.drawString(margin_x + logo_width + 20, y - 10, f"{header_type} Weight & Balance Report")
+    c.drawString(
+        margin_x + logo_width + 20,
+        y - 10,
+        "Boeing 7x7 Weight & Balance Report"
+    )
 
     y -= (logo_height + 20)
 
@@ -269,9 +268,10 @@ def build_pdf_report(
     draw_detail("Aircraft Type", aircraft_type or "-")
     draw_detail("Registration", registration or "-")
     draw_detail("MSN", msn or "-")
-    draw_detail("Weighing Location", weighing_place or "-")
+    draw_detail("Weighing Place", weighing_place or "-")
     draw_detail("Weighing Date", weighing_date or "-")
     draw_detail("Scales Calibration Date", scales_cal_date or "-")
+    draw_detail("WBM reference", wbm_reference or "-")
 
     y -= 8
 
@@ -315,7 +315,7 @@ def build_pdf_report(
         c.drawRightString(margin_x + 430, y, f"{moment:,.1f}")
         y -= 12
         # If we get too low, we stop table early to leave room for note + diagram
-        if y < 160:
+        if y < 180:
             break
 
     y -= 8
@@ -335,15 +335,15 @@ def build_pdf_report(
         img_width_px, img_height_px = img.getSize()
 
         max_width = width - 2 * margin_x
-        # Use remaining vertical space above bottom margin (40)
-        max_height = max(y - 40, 60)
+        # Reserve some space at the bottom (~70) for signatures
+        max_height = max(y - 120, 60)
 
         scale = min(max_width / img_width_px, max_height / img_height_px)
         draw_width = img_width_px * scale
         draw_height = img_height_px * scale
 
         x_pos = (width - draw_width) / 2
-        y_pos = max(y - draw_height, 40)
+        y_pos = max(y - draw_height, 90)
 
         c.setFont("Helvetica-Bold", 12)
         c.drawString(margin_x, y, "CG Diagram")
@@ -357,6 +357,23 @@ def build_pdf_report(
             mask='auto'
         )
 
+    # --- Signature blocks at bottom of page ---
+    sig_y = 60
+    col_width = (width - 2 * margin_x) / 3.0
+
+    def draw_signature_block(x: float, label: str, name: str):
+        c.setFont("Helvetica-Bold", 10)
+        c.drawString(x, sig_y + 18, label)
+        # line
+        c.line(x, sig_y, x + col_width - 20, sig_y)
+        c.setFont("Helvetica", 9)
+        if name:
+            c.drawString(x, sig_y - 10, name)
+
+    draw_signature_block(margin_x, "Weighed by", weighed_by)
+    draw_signature_block(margin_x + col_width, "Checked by", checked_by)
+    draw_signature_block(margin_x + 2 * col_width, "Approved by", approved_by)
+
     c.showPage()
     c.save()
     buffer.seek(0)
@@ -366,17 +383,17 @@ def build_pdf_report(
 # ---------- Streamlit UI ----------
 
 st.set_page_config(
-    page_title="Boeing CG Calculator (737 / 787)",
+    page_title="Boeing 7x7 CG Calculator (737 / 787)",
     layout="wide",
 )
 
-st.title("Boeing 737 / 787 Weighing – Centre of Gravity Calculator")
+st.title("Boeing 7x7 Weighing – Centre of Gravity Calculator")
 
 st.markdown(
     """
 Enter your **scale readings**, **arms from datum**, and aircraft details.  
 The app will compute total weight, CG arm, and optional %MAC,
-display a 2D diagram, and generate a PDF Weight & Balance report (with CG diagram on page 1).
+display a 2D diagram, and generate a PDF Weight & Balance report (with CG diagram and sign-off on page 1).
 
 > Presets are for engineering support only – always verify against your approved W&B data.
 """
@@ -384,10 +401,7 @@ display a 2D diagram, and generate a PDF Weight & Balance report (with CG diagra
 
 # Sidebar: logo, link, units
 with st.sidebar:
-    # Logo from your website
     st.image(LOGO_URL, use_column_width=True)
-
-    # Website link
     st.markdown(
         f"""
         <div style='text-align: center; margin-top: 10px;'>
@@ -438,15 +452,31 @@ st.subheader("Aircraft & Weighing Details")
 dcol1, dcol2, dcol3 = st.columns(3)
 with dcol1:
     operator = st.text_input("Operator", value="")
-    # Aircraft type pre-filled from preset but still editable
     aircraft_type = st.text_input("Aircraft type", value=preset["label"])
 with dcol2:
     registration = st.text_input("Registration", value="")
     msn = st.text_input("MSN", value="")
 with dcol3:
-    weighing_place = st.text_input("Weighing location", value="")
+    weighing_place = st.text_input("Weighing place", value="")
     scales_cal_date = st.text_input("Scales calibration date", value="")
     weighing_date = st.text_input("Weighing date", value=datetime.now().strftime("%Y-%m-%d"))
+
+wbm_reference = st.text_input(
+    "WBM reference (document no & revision)",
+    value="",
+    help="e.g. B787-WBM-12345 Rev 3"
+)
+
+st.markdown("---")
+st.subheader("Sign-off")
+
+scol1, scol2, scol3 = st.columns(3)
+with scol1:
+    weighed_by = st.text_input("Weighed by", value="")
+with scol2:
+    checked_by = st.text_input("Checked by", value="")
+with scol3:
+    approved_by = st.text_input("Approved by", value="")
 
 st.markdown("---")
 st.subheader("Weighing Inputs")
@@ -629,6 +659,10 @@ if calculate:
                 weighing_place=weighing_place,
                 scales_cal_date=scales_cal_date,
                 weighing_date=weighing_date,
+                wbm_reference=wbm_reference,
+                weighed_by=weighed_by,
+                checked_by=checked_by,
+                approved_by=approved_by,
                 cg_diagram_png=cg_buffer,
             )
 
