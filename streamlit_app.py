@@ -34,14 +34,14 @@ AIRCRAFT_PRESETS: Dict[str, Dict] = {
         "label": "Boeing 737",
         "type": "simple",     # NLG + LMLG + RMLG
 
-        # Values based on your example data (inches from datum)
-        "nlg_arm": 93.0,          # Nose Landing Gear arm (in)
-        "lmlg_arm": 706.822,      # Main Landing Gear arm (in)
-        "rmlg_arm": 706.822,      # Symmetric right MLG
+        # Example gear arms (inches from datum)
+        "nlg_arm": 93.0,
+        "lmlg_arm": 706.822,
+        "rmlg_arm": 706.822,
 
-        # LEMAC / MAC here are illustrative – replace with real 737 WBM data
-        "lemac": 610.0,           # placeholder
-        "mac_length": 130.0,      # placeholder
+        # Placeholder MAC data – replace with real WBM data
+        "lemac": 610.0,
+        "mac_length": 130.0,
     },
 }
 
@@ -97,7 +97,7 @@ def compute_cg(weigh_points: List[WeighPoint],
     total_moment = sum(p.weight * p.arm for p in weigh_points)
     cg_arm = total_moment / total_weight
 
-    mac_percent = None
+    mac_percent = None    # %MAC
     if lemac_arm is not None and mac_length is not None and mac_length > 0:
         mac_percent = (cg_arm - lemac_arm) / mac_length * 100.0
 
@@ -116,6 +116,8 @@ def normalise(value: float, min_val: float, max_val: float) -> float:
     return (value - min_val) / (max_val - min_val)
 
 
+# ---------- Plotting helpers ----------
+
 def draw_aircraft_diagram(
     gear_arms: List[float],
     gear_labels: List[str],
@@ -124,14 +126,8 @@ def draw_aircraft_diagram(
     mac_length: Optional[float] = None,
 ):
     """
-    Draw a simple 2D side-view diagram of the aircraft with:
-    - Fuselage as a bar
-    - Arbitrary number of gear positions (NLG, MLG bogies, etc.)
-    - MAC span (if given)
-    - CG location
-    Arms are scaled linearly between min and max arms.
+    Simple 2D side-view diagram with gear, MAC and CG.
     """
-
     if not gear_arms:
         raise ValueError("No gear arms provided for diagram.")
 
@@ -147,7 +143,7 @@ def draw_aircraft_diagram(
     # Fuselage bar
     ax.hlines(0.5, 0.02, 0.98, linewidth=6)
 
-    # Nose & tail markers (approx at min/max)
+    # Nose & tail labels
     ax.text(0.02, 0.6, "Nose", ha="left", va="bottom", fontsize=8)
     ax.text(0.98, 0.6, "Tail", ha="right", va="bottom", fontsize=8)
 
@@ -157,11 +153,10 @@ def draw_aircraft_diagram(
         x = normalise(arm, min_arm, max_arm)
         ax.vlines(x, 0.5, gear_y, linewidth=3)
         ax.scatter([x], [gear_y], s=60)
-        # Slight vertical offset between labels to reduce overlap
         label_offset = 0.08 + 0.03 * (i % 2)
         ax.text(x, gear_y - label_offset, label, ha="center", va="top", fontsize=8)
 
-    # MAC region (if available)
+    # MAC region
     if lemac_arm is not None and mac_length is not None:
         x_lemac = normalise(lemac_arm, min_arm, max_arm)
         x_tlemac = normalise(lemac_arm + mac_length, min_arm, max_arm)
@@ -181,12 +176,10 @@ def draw_aircraft_diagram(
     ax.text(x_cg, 0.78, "CG", ha="center", va="bottom",
             fontsize=9, fontweight="bold")
 
-    # Axis formatting
     ax.set_xlim(0, 1)
     ax.set_ylim(0.1, 0.9)
     ax.axis("off")
 
-    # Annotation of scale (min/max arm)
     ax.text(0.02, 0.15, f"Datum scale: {min_arm:.1f} to {max_arm:.1f}",
             ha="left", va="center", fontsize=8)
 
@@ -204,26 +197,22 @@ def draw_cg_envelope_plot(
     corrected_mac: Optional[float],
 ):
     """
-    Draw a CG envelope diagram: Weight vs %MAC with a simple rectangular envelope.
-    Plots as-weighed and corrected CG points if %MAC values are provided.
+    CG envelope: Weight vs %MAC with as-weighed and corrected points.
     """
     if min_weight <= 0 or max_weight <= min_weight or aft_limit <= fwd_limit:
         raise ValueError("Invalid CG envelope limits.")
 
     fig, ax = plt.subplots(figsize=(4, 4))
 
-    # Envelope rectangle
     env_x = [fwd_limit, fwd_limit, aft_limit, aft_limit, fwd_limit]
     env_y = [min_weight, max_weight, max_weight, min_weight, min_weight]
     ax.plot(env_x, env_y, linestyle="-")
     ax.fill(env_x, env_y, alpha=0.1)
 
-    # As-weighed point
     if as_mac is not None and as_w > 0:
         ax.scatter([as_mac], [as_w], marker="x")
         ax.text(as_mac, as_w, " As-weighed", fontsize=8, va="bottom", ha="left")
 
-    # Corrected point
     if corrected_mac is not None and corrected_w > 0:
         ax.scatter([corrected_mac], [corrected_w], marker="o")
         ax.text(corrected_mac, corrected_w, " Corrected", fontsize=8, va="top", ha="left")
@@ -240,6 +229,78 @@ def draw_cg_envelope_plot(
     ax.set_ylim(min_weight - y_pad, max_weight + y_pad)
 
     ax.grid(True, linestyle="--", linewidth=0.5)
+    return fig
+
+
+def draw_gear_load_chart(points: List[WeighPoint]):
+    """
+    Gear load distribution: bar chart of weight per gear point.
+    """
+    fig, ax = plt.subplots(figsize=(5, 3))
+    names = [p.name for p in points]
+    weights = [p.weight for p in points]
+    ax.bar(names, weights)
+    ax.set_xlabel("Gear / Weigh Point")
+    ax.set_ylabel("Weight")
+    ax.set_title("Gear Load Distribution")
+    ax.grid(axis="y", linestyle="--", linewidth=0.5)
+    return fig
+
+
+def draw_moment_vs_arm_chart(points: List[WeighPoint]):
+    """
+    Moment vs arm: scatter / line diagram for sanity check of lever-arm effects.
+    """
+    fig, ax = plt.subplots(figsize=(5, 3))
+    arms = [p.arm for p in points]
+    moments = [p.arm * p.weight for p in points]
+    ax.plot(arms, moments, marker="o")
+    ax.set_xlabel("Arm from datum")
+    ax.set_ylabel("Moment")
+    ax.set_title("Moment vs Arm")
+    ax.grid(True, linestyle="--", linewidth=0.5)
+    return fig
+
+
+def draw_symmetry_chart(left_weight: float, right_weight: float):
+    """
+    Left vs right main gear symmetry chart.
+    """
+    fig, ax = plt.subplots(figsize=(4, 3))
+    labels = ["Left main", "Right main"]
+    values = [left_weight, right_weight]
+    ax.bar(labels, values)
+    ax.set_ylabel("Weight")
+    ax.set_title("Lateral Symmetry (Main Gear)")
+    ax.grid(axis="y", linestyle="--", linewidth=0.5)
+
+    diff = right_weight - left_weight
+    ax.text(0.5, max(values) * 1.02 if max(values) > 0 else 0,
+            f"Δ (Right - Left): {diff:,.1f}",
+            ha="center", va="bottom", fontsize=8)
+    return fig
+
+
+def draw_history_chart(history_points: List[Dict]):
+    """
+    Historical CG trend: %MAC vs point index / label.
+    history_points: list of {"label": str, "weight": float, "mac": float}
+    """
+    if not history_points:
+        raise ValueError("No historical data for trend chart.")
+
+    labels = [p["label"] for p in history_points]
+    mac_vals = [p["mac"] for p in history_points]
+
+    fig, ax = plt.subplots(figsize=(5, 3))
+    x = list(range(len(labels)))
+    ax.plot(x, mac_vals, marker="o")
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, rotation=45, ha="right")
+    ax.set_ylabel("% MAC")
+    ax.set_title("CG Trend (%MAC over time)")
+    ax.grid(True, linestyle="--", linewidth=0.5)
+    fig.tight_layout()
     return fig
 
 
@@ -283,11 +344,16 @@ def build_pdf_report(
     # CG diagrams:
     cg_diagram_png: Optional[BytesIO] = None,
     cg_envelope_png: Optional[BytesIO] = None,
+    # Additional charts:
+    gear_load_png: Optional[BytesIO] = None,
+    moment_arm_png: Optional[BytesIO] = None,
+    symmetry_png: Optional[BytesIO] = None,
+    history_png: Optional[BytesIO] = None,
 ) -> BytesIO:
     """
     Build a PDF weight & balance report and return it as an in-memory buffer.
-    Includes logo, aircraft details, weighing data, CG diagram on the same page,
-    CG envelope plot, adjustments, notes, and signature blocks.
+    Page 1: logo, details, summary, gear data, adjustments, CG diagrams.
+    Page 2: additional charts (gear load, moment vs arm, symmetry, history) if available.
     """
     from reportlab.lib.pagesizes import A4
     from reportlab.pdfgen import canvas
@@ -301,7 +367,7 @@ def build_pdf_report(
     margin_x = 40
     y = height - 40
 
-    # --- Logo at top ---
+    # --- Page 1 header with logo ---
     logo_height = 40
     logo_width = 120
     try:
@@ -320,7 +386,6 @@ def build_pdf_report(
     except Exception:
         pass
 
-    # Header text
     c.setFont("Helvetica-Bold", 16)
     c.drawString(
         margin_x + logo_width + 20,
@@ -526,9 +591,8 @@ def build_pdf_report(
 
     y -= 10
 
-    # --- CG diagram on same page (side view) ---
+    # --- CG side-view diagram on page 1 ---
     if cg_diagram_png is not None:
-        from reportlab.lib.utils import ImageReader
         img = ImageReader(cg_diagram_png)
         img_width_px, img_height_px = img.getSize()
 
@@ -557,9 +621,8 @@ def build_pdf_report(
     else:
         y -= 10
 
-    # --- CG Envelope diagram (Weight vs %MAC) ---
+    # --- CG Envelope diagram (if available, still on page 1) ---
     if cg_envelope_png is not None and y > 150:
-        from reportlab.lib.utils import ImageReader
         img = ImageReader(cg_envelope_png)
         img_width_px, img_height_px = img.getSize()
 
@@ -625,7 +688,7 @@ def build_pdf_report(
         "This report is issued by Feras Aviation Technical Services Ltd for engineering support purposes."
     )
 
-    # --- Signature blocks at bottom of page ---
+    # --- Signature blocks (bottom of page 1) ---
     sig_y = 40
     col_width = (width - 2 * margin_x) / 3.0
 
@@ -643,7 +706,74 @@ def build_pdf_report(
     draw_signature_block(margin_x + col_width, "Checked by", checked_by, checked_by_date)
     draw_signature_block(margin_x + 2 * col_width, "Approved by", approved_by, approved_by_date)
 
+    # Finalise page 1
     c.showPage()
+
+    # ---------- Page 2: Additional Analysis Charts ----------
+
+    have_extra_charts = any([
+        gear_load_png is not None,
+        moment_arm_png is not None,
+        symmetry_png is not None,
+        history_png is not None,
+    ])
+
+    if have_extra_charts:
+        y = height - 60
+        c.setFont("Helvetica-Bold", 16)
+        c.drawString(margin_x, y, "Additional Analysis Charts")
+        y -= 30
+
+        from reportlab.lib.utils import ImageReader
+
+        def draw_chart_block(title: str, img_buf: BytesIO, y_start: float) -> float:
+            if img_buf is None:
+                return y_start
+            nonlocal c
+            nonlocal width, height, margin_x
+            y = y_start
+            if y < 150:  # new page if not enough space
+                c.showPage()
+                y = height - 60
+                c.setFont("Helvetica-Bold", 14)
+                c.drawString(margin_x, y, "Additional Analysis Charts (cont.)")
+                y -= 30
+            c.setFont("Helvetica-Bold", 12)
+            c.drawString(margin_x, y, title)
+            y -= 16
+
+            img = ImageReader(img_buf)
+            img_width_px, img_height_px = img.getSize()
+            max_width = width - 2 * margin_x
+            max_height = 200
+            scale = min(max_width / img_width_px, max_height / img_height_px)
+            draw_width = img_width_px * scale
+            draw_height = img_height_px * scale
+            x_pos = (width - draw_width) / 2
+            y_pos = y - draw_height
+            c.drawImage(
+                img,
+                x_pos,
+                y_pos,
+                width=draw_width,
+                height=draw_height,
+                preserveAspectRatio=True,
+                mask='auto'
+            )
+            return y_pos - 24
+
+        if gear_load_png is not None:
+            y = draw_chart_block("Gear Load Distribution", gear_load_png, y)
+        if moment_arm_png is not None:
+            y = draw_chart_block("Moment vs Arm", moment_arm_png, y)
+        if symmetry_png is not None:
+            y = draw_chart_block("Lateral Symmetry (Main Gear)", symmetry_png, y)
+        if history_png is not None:
+            y = draw_chart_block("CG Trend (%MAC over time)", history_png, y)
+
+        c.showPage()
+
+    # Save PDF
     c.save()
     buffer.seek(0)
     return buffer
@@ -661,9 +791,12 @@ st.title("Boeing 7x7 Weighing – Centre of Gravity Calculator")
 st.markdown(
     """
 Enter your **scale readings**, **arms from datum**, aircraft details, envelope limits, and adjustments.  
-The app computes as-weighed and corrected weight & CG, shows a side-view diagram and a CG envelope plot,
-and generates a comprehensive PDF Weight & Balance report (with diagrams and sign-off on page 1).
 
+The app will:
+- Compute **as-weighed** and **corrected** weight & CG  
+- Show **side-view CG**, **CG envelope**, **gear load**, **moment vs arm**, **lateral symmetry**, and **CG history** (if provided)  
+- Generate a comprehensive **PDF report** (with diagrams and sign-off)
+    
 > Presets and envelope limits are for **demo / engineering support** only – always verify against your approved W&B data.
 """
 )
@@ -697,7 +830,7 @@ with st.sidebar:
         """
     )
 
-# ---------- Aircraft selection (787 / 737) ----------
+# ---------- Aircraft selection ----------
 
 st.subheader("Aircraft Selection")
 
@@ -716,8 +849,8 @@ env_defaults = ENVELOPE_PRESETS.get(aircraft_model, {
 })
 
 st.caption(
-    "Preset arms, MAC values and envelope limits are illustrative (demo) – "
-    "always confirm against your Weight & Balance Manual and CG envelope."
+    "Preset arms, MAC values and envelope limits are illustrative (demo). "
+    "Always confirm against your Weight & Balance Manual and CG envelope."
 )
 
 # ---------- Aircraft & weighing details ----------
@@ -885,7 +1018,7 @@ with col4:
 
 st.markdown("---")
 
-# ---------- CG Envelope Limits (for plot) ----------
+# ---------- CG Envelope Limits ----------
 
 st.subheader("CG Envelope Limits (for Weight vs %MAC plot) – demo presets loaded")
 
@@ -896,13 +1029,13 @@ with env_col1:
         min_value=0.0,
         value=env_defaults["min_weight"],
         step=1000.0,
-        help="Lowest weight for the CG envelope (demo default for selected type)."
+        help="Lowest weight for the CG envelope (demo default)."
     )
     env_fwd_limit = st.number_input(
         "Forward CG limit (% MAC)",
         value=env_defaults["fwd_limit"],
         step=0.1,
-        help="Forward limit of CG envelope in %MAC (demo default for selected type)."
+        help="Forward CG limit in %MAC (demo default)."
     )
 with env_col2:
     env_max_weight = st.number_input(
@@ -910,18 +1043,18 @@ with env_col2:
         min_value=0.0,
         value=env_defaults["max_weight"],
         step=1000.0,
-        help="Highest weight for the CG envelope (demo default for selected type)."
+        help="Highest weight for the CG envelope (demo default)."
     )
     env_aft_limit = st.number_input(
         "Aft CG limit (% MAC)",
         value=env_defaults["aft_limit"],
         step=0.1,
-        help="Aft limit of CG envelope in %MAC (demo default for selected type)."
+        help="Aft CG limit in %MAC (demo default)."
     )
 
 st.caption(
-    "These values are **demo presets only**. Replace with the actual envelope from the "
-    "approved Weight & Balance Manual / CG chart for the specific aircraft."
+    "These are **demo envelope values**, not an approved CG chart. "
+    "Replace with the actual data from the W&B Manual."
 )
 
 st.markdown("---")
@@ -978,6 +1111,30 @@ with st.expander("Additions (items not present during weighing but included in f
 
 st.markdown("---")
 
+# ---------- Historical Trend Input ----------
+
+st.subheader("Historical Trend (optional)")
+
+history_points: List[Dict] = []
+with st.expander("Historical CG data (for trend chart)", expanded=False):
+    st.markdown(
+        "Enter previous weighing results (e.g. OEW %MAC over time). "
+        "The current result will be appended automatically."
+    )
+    n_hist = st.number_input(
+        "Number of historical points",
+        min_value=0, max_value=20, value=0, step=1, key="n_hist_items"
+    )
+    for i in range(int(n_hist)):
+        hcol1, hcol2, hcol3 = st.columns([2, 1, 1])
+        label = hcol1.text_input("Label / Date", key=f"hist_label_{i}")
+        w = hcol2.number_input("Weight", min_value=0.0, value=0.0, step=100.0, key=f"hist_w_{i}")
+        mac = hcol3.number_input("%MAC", value=0.0, step=0.1, key=f"hist_mac_{i}")
+        if label and mac != 0.0:
+            history_points.append({"label": label, "weight": w, "mac": mac})
+
+st.markdown("---")
+
 # ---------- Configuration Notes ----------
 
 st.subheader("Configuration / Notes")
@@ -997,6 +1154,7 @@ calculate = st.button("Calculate CG", type="primary")
 
 if calculate:
     try:
+        # Build weighing points & left/right main totals
         if preset["type"] == "dual_bogie":
             points: List[WeighPoint] = [
                 WeighPoint("NLG", nlg_w, nlg_arm, nlg_serial),
@@ -1007,6 +1165,8 @@ if calculate:
             ]
             gear_arms = [nlg_arm, lmlg_fwd_arm, lmlg_aft_arm, rmlg_fwd_arm, rmlg_aft_arm]
             gear_labels = ["NLG", "LMLG FWD", "LMLG AFT", "RMLG FWD", "RMLG AFT"]
+            left_main_total = lmlg_fwd_w + lmlg_aft_w
+            right_main_total = rmlg_fwd_w + rmlg_aft_w
         else:
             points = [
                 WeighPoint("NLG", nlg_w, nlg_arm, nlg_serial),
@@ -1015,6 +1175,8 @@ if calculate:
             ]
             gear_arms = [nlg_arm, lmlg_arm, rmlg_arm]
             gear_labels = ["NLG", "LMLG", "RMLG"]
+            left_main_total = lmlg_w
+            right_main_total = rmlg_w
 
         result = compute_cg(points, lemac_arm=lemac_arm, mac_length=mac_length)
 
@@ -1041,26 +1203,31 @@ if calculate:
         if lemac_arm is not None and mac_length is not None and mac_length > 0 and corrected_weight > 0:
             corrected_mac_percent = (corrected_cg - lemac_arm) / mac_length * 100.0
 
-        res_col1, res_col2 = st.columns([1, 1.3])
+        res_col1, res_col2 = st.columns([1, 1.5])
 
         cg_buffer = None
         env_buffer = None
+        gear_buffer = None
+        moment_buffer = None
+        symmetry_buffer = None
+        history_buffer = None
 
         with res_col2:
             st.markdown("## Aircraft CG Diagram (Side View)")
-            fig = draw_aircraft_diagram(
+            fig_side = draw_aircraft_diagram(
                 gear_arms=gear_arms,
                 gear_labels=gear_labels,
                 cg_arm=corrected_cg,
                 lemac_arm=lemac_arm,
                 mac_length=mac_length,
             )
-            st.pyplot(fig)
+            st.pyplot(fig_side)
 
             cg_buffer = BytesIO()
-            fig.savefig(cg_buffer, format="png", bbox_inches="tight")
+            fig_side.savefig(cg_buffer, format="png", bbox_inches="tight")
             cg_buffer.seek(0)
 
+            # CG Envelope
             if (
                 env_min_weight > 0
                 and env_max_weight > env_min_weight
@@ -1085,6 +1252,49 @@ if calculate:
                 env_buffer.seek(0)
             else:
                 st.info("CG envelope plot not generated – check envelope limits and MAC inputs if you want this diagram.")
+
+            st.markdown("## Additional Analysis Charts")
+
+            # Gear load chart
+            fig_gear = draw_gear_load_chart(points)
+            st.markdown("#### Gear Load Distribution")
+            st.pyplot(fig_gear)
+            gear_buffer = BytesIO()
+            fig_gear.savefig(gear_buffer, format="png", bbox_inches="tight")
+            gear_buffer.seek(0)
+
+            # Moment vs arm chart
+            fig_mom = draw_moment_vs_arm_chart(points)
+            st.markdown("#### Moment vs Arm")
+            st.pyplot(fig_mom)
+            moment_buffer = BytesIO()
+            fig_mom.savefig(moment_buffer, format="png", bbox_inches="tight")
+            moment_buffer.seek(0)
+
+            # Lateral symmetry chart
+            fig_sym = draw_symmetry_chart(left_main_total, right_main_total)
+            st.markdown("#### Lateral Symmetry (Main Gear)")
+            st.pyplot(fig_sym)
+            symmetry_buffer = BytesIO()
+            fig_sym.savefig(symmetry_buffer, format="png", bbox_inches="tight")
+            symmetry_buffer.seek(0)
+
+            # Historical trend chart
+            if history_points or corrected_mac_percent is not None:
+                history_for_plot = list(history_points)
+                if corrected_mac_percent is not None:
+                    history_for_plot.append({
+                        "label": "Current",
+                        "weight": corrected_weight,
+                        "mac": corrected_mac_percent,
+                    })
+                if history_for_plot:
+                    fig_hist = draw_history_chart(history_for_plot)
+                    st.markdown("#### CG Trend (%MAC over time)")
+                    st.pyplot(fig_hist)
+                    history_buffer = BytesIO()
+                    fig_hist.savefig(history_buffer, format="png", bbox_inches="tight")
+                    history_buffer.seek(0)
 
         with res_col1:
             st.markdown("## Results")
@@ -1135,6 +1345,7 @@ if calculate:
                 st.write(f"Total additions: {sum_add_w:,.1f} {weight_unit}")
                 st.write(f"Pitch correction applied: {pitch_correction:.2f} {arm_unit}")
 
+            # PDF download
             pdf_buffer = build_pdf_report(
                 result=result,
                 points=points,
@@ -1170,6 +1381,10 @@ if calculate:
                 final_mac_percent=corrected_mac_percent,
                 cg_diagram_png=cg_buffer,
                 cg_envelope_png=env_buffer,
+                gear_load_png=gear_buffer,
+                moment_arm_png=moment_buffer,
+                symmetry_png=symmetry_buffer,
+                history_png=history_buffer,
             )
 
             st.download_button(
@@ -1182,4 +1397,5 @@ if calculate:
     except Exception as e:
         st.error(f"Error during calculation: {e}")
 else:
-    st.info("Select aircraft type, enter aircraft details, weighing data, envelope limits, and adjustments, then click **Calculate CG**.")
+    st.info("Select aircraft type, enter aircraft details, weighing data, envelope limits, optional history, "
+            "and adjustments, then click **Calculate CG**.")
