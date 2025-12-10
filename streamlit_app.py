@@ -1,7 +1,7 @@
 import streamlit as st
 import matplotlib.pyplot as plt
 from dataclasses import dataclass
-from typing import Optional, List
+from typing import Optional, List, Dict
 from io import BytesIO
 from datetime import datetime
 
@@ -12,7 +12,7 @@ WEBSITE_URL = "https://www.ferasaviation.info"
 
 # ---------- Aircraft presets (update with your real WBM data) ----------
 
-AIRCRAFT_PRESETS = {
+AIRCRAFT_PRESETS: Dict[str, Dict] = {
     "Boeing 787": {
         "label": "Boeing 787",
         "type": "dual_bogie",  # NLG + 4 x MLG bogie scales
@@ -45,7 +45,6 @@ AIRCRAFT_PRESETS = {
     },
 }
 
-
 # ---------- Core data structures & logic ----------
 
 @dataclass
@@ -53,11 +52,13 @@ class WeighPoint:
     name: str       # e.g. "NLG", "LMLG FWD"
     weight: float   # scale reading (kg or lb)
     arm: float      # distance from datum (same length units everywhere)
+    serial: str = ""  # scale pad serial number (optional)
 
 
 @dataclass
 class CGResult:
     total_weight: float
+    total_moment: float
     cg_arm: float
     mac_percent: Optional[float] = None
 
@@ -85,6 +86,7 @@ def compute_cg(weigh_points: List[WeighPoint],
 
     return CGResult(
         total_weight=total_weight,
+        total_moment=total_moment,
         cg_arm=cg_arm,
         mac_percent=mac_percent
     )
@@ -192,16 +194,26 @@ def build_pdf_report(
     scales_cal_date: str,
     weighing_date: str,
     wbm_reference: str,
+    equipment_model: str,
+    equipment_serial: str,
+    pitch_attitude_deg: float,
+    pitch_correction: float,
+    subtractions: List[Dict],
+    additions: List[Dict],
     weighed_by: str,
+    weighed_by_date: str,
     checked_by: str,
+    checked_by_date: str,
     approved_by: str,
+    approved_by_date: str,
+    config_notes: str,
     # CG diagram image buffer:
     cg_diagram_png: Optional[BytesIO] = None,
 ) -> BytesIO:
     """
     Build a PDF weight & balance report and return it as an in-memory buffer.
     Includes logo, aircraft details, weighing data, CG diagram on the same page,
-    and signature blocks.
+    adjustments, notes, and signature blocks.
     """
     from reportlab.lib.pagesizes import A4
     from reportlab.pdfgen import canvas
@@ -273,7 +285,39 @@ def build_pdf_report(
     draw_detail("Scales Calibration Date", scales_cal_date or "-")
     draw_detail("WBM reference", wbm_reference or "-")
 
-    y -= 8
+    # Equipment info
+    draw_detail("Equipment model", equipment_model or "-")
+    draw_detail("Equipment serial", equipment_serial or "-")
+
+    # Pitch info
+    pitch_str = f"{pitch_attitude_deg:.2f}°" if pitch_attitude_deg else "-"
+    draw_detail("Pitch attitude during weighing", pitch_str)
+    corr_str = f"{pitch_correction:.2f} {arm_unit}" if pitch_correction else "0"
+    draw_detail("Pitch correction applied to CG", corr_str)
+
+    y -= 4
+
+    # --- Compute adjustments for summary ---
+    as_w = result.total_weight
+    as_m = result.total_moment
+    as_cg = result.cg_arm
+
+    sum_sub_w = sum(item["weight"] for item in subtractions)
+    sum_sub_m = sum(item["weight"] * item["arm"] for item in subtractions)
+    sum_add_w = sum(item["weight"] for item in additions)
+    sum_add_m = sum(item["weight"] * item["arm"] for item in additions)
+
+    # Apply pitch correction as delta in CG arm
+    pitch_corrected_m = as_m + pitch_correction * as_w
+
+    corrected_weight = as_w - sum_sub_w + sum_add_w
+    corrected_moment = pitch_corrected_m - sum_sub_m + sum_add_m
+
+    corrected_cg = corrected_moment / corrected_weight if corrected_weight > 0 else as_cg
+
+    corrected_mac_percent = None
+    if lemac_arm is not None and mac_length is not None and mac_length > 0:
+        corrected_mac_percent = (corrected_cg - lemac_arm) / mac_length * 100.0
 
     # --- Summary ---
     c.setFont("Helvetica-Bold", 12)
@@ -281,41 +325,58 @@ def build_pdf_report(
     y -= 16
 
     c.setFont("Helvetica", 10)
-    c.drawString(margin_x, y, f"Total weight: {result.total_weight:,.1f} {weight_unit}")
+    c.drawString(margin_x, y, f"As-weighed weight: {as_w:,.1f} {weight_unit}")
     y -= 12
-    c.drawString(margin_x, y, f"CG arm: {result.cg_arm:.2f} {arm_unit} from datum")
+    c.drawString(margin_x, y, f"As-weighed CG arm: {as_cg:.2f} {arm_unit} from datum")
     y -= 12
 
-    if result.mac_percent is not None and lemac_arm is not None and mac_length is not None:
-        c.drawString(margin_x, y, f"CG position: {result.mac_percent:.2f} % MAC")
+    if pitch_correction:
+        c.drawString(
+            margin_x,
+            y,
+            f"Pitch-corrected moment applied: ΔCG = {pitch_correction:.2f} {arm_unit}"
+        )
         y -= 12
-        c.drawString(margin_x, y, f"LEMAC: {lemac_arm:.2f} {arm_unit}   MAC length: {mac_length:.2f} {arm_unit}")
-        y -= 18
+
+    c.drawString(margin_x, y, f"Total subtractions: {sum_sub_w:,.1f} {weight_unit}")
+    y -= 12
+    c.drawString(margin_x, y, f"Total additions: {sum_add_w:,.1f} {weight_unit}")
+    y -= 12
+
+    c.drawString(margin_x, y, f"Final aircraft weight: {corrected_weight:,.1f} {weight_unit}")
+    y -= 12
+    c.drawString(margin_x, y, f"Final CG arm: {corrected_cg:.2f} {arm_unit} from datum")
+    y -= 12
+
+    if corrected_mac_percent is not None:
+        c.drawString(margin_x, y, f"Final CG position: {corrected_mac_percent:.2f} % MAC")
+        y -= 16
     else:
         y -= 8
 
-    # --- Table header ---
+    # --- Gear Weighing Data Table ---
     c.setFont("Helvetica-Bold", 12)
     c.drawString(margin_x, y, "Gear Weighing Data")
     y -= 16
 
     c.setFont("Helvetica-Bold", 10)
     c.drawString(margin_x, y, "Point")
-    c.drawString(margin_x + 100, y, f"Weight ({weight_unit})")
-    c.drawString(margin_x + 220, y, f"Arm ({arm_unit})")
-    c.drawString(margin_x + 340, y, "Moment")
+    c.drawString(margin_x + 90, y, "Scale S/N")
+    c.drawString(margin_x + 200, y, f"Weight ({weight_unit})")
+    c.drawString(margin_x + 320, y, f"Arm ({arm_unit})")
+    c.drawString(margin_x + 420, y, "Moment")
     y -= 12
 
     c.setFont("Helvetica", 10)
     for p in points:
         moment = p.weight * p.arm
         c.drawString(margin_x, y, p.name)
-        c.drawRightString(margin_x + 180, y, f"{p.weight:,.1f}")
-        c.drawRightString(margin_x + 300, y, f"{p.arm:.2f}")
-        c.drawRightString(margin_x + 430, y, f"{moment:,.1f}")
+        c.drawString(margin_x + 90, y, p.serial or "-")
+        c.drawRightString(margin_x + 260, y, f"{p.weight:,.1f}")
+        c.drawRightString(margin_x + 380, y, f"{p.arm:.2f}")
+        c.drawRightString(margin_x + 500, y, f"{moment:,.1f}")
         y -= 12
-        # If we get too low, we stop table early to leave room for note + diagram
-        if y < 180:
+        if y < 200:
             break
 
     y -= 8
@@ -328,6 +389,67 @@ def build_pdf_report(
     )
     y -= 20
 
+    # --- Adjustments tables: Subtractions & Additions ---
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(margin_x, y, "Adjustments")
+    y -= 16
+
+    # Subtractions
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(margin_x, y, "Subtractions (items present during weighing but not in final weight)")
+    y -= 12
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(margin_x, y, "Item")
+    c.drawString(margin_x + 220, y, f"Weight ({weight_unit})")
+    c.drawString(margin_x + 320, y, f"Arm ({arm_unit})")
+    c.drawString(margin_x + 420, y, "Moment")
+    y -= 12
+
+    c.setFont("Helvetica", 9)
+    if subtractions:
+        for item in subtractions:
+            moment = item["weight"] * item["arm"]
+            c.drawString(margin_x, y, item["description"] or "-")
+            c.drawRightString(margin_x + 280, y, f"{item['weight']:,.1f}")
+            c.drawRightString(margin_x + 380, y, f"{item['arm']:.2f}")
+            c.drawRightString(margin_x + 500, y, f"{moment:,.1f}")
+            y -= 11
+            if y < 180:
+                break
+    else:
+        c.drawString(margin_x, y, "(None)")
+        y -= 12
+
+    y -= 8
+
+    # Additions
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(margin_x, y, "Additions (items not present during weighing but included in final weight)")
+    y -= 12
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(margin_x, y, "Item")
+    c.drawString(margin_x + 220, y, f"Weight ({weight_unit})")
+    c.drawString(margin_x + 320, y, f"Arm ({arm_unit})")
+    c.drawString(margin_x + 420, y, "Moment")
+    y -= 12
+
+    c.setFont("Helvetica", 9)
+    if additions:
+        for item in additions:
+            moment = item["weight"] * item["arm"]
+            c.drawString(margin_x, y, item["description"] or "-")
+            c.drawRightString(margin_x + 280, y, f"{item['weight']:,.1f}")
+            c.drawRightString(margin_x + 380, y, f"{item['arm']:.2f}")
+            c.drawRightString(margin_x + 500, y, f"{moment:,.1f}")
+            y -= 11
+            if y < 160:
+                break
+    else:
+        c.drawString(margin_x, y, "(None)")
+        y -= 12
+
+    y -= 10
+
     # --- CG diagram on same page (if provided) ---
     if cg_diagram_png is not None:
         from reportlab.lib.utils import ImageReader
@@ -335,7 +457,7 @@ def build_pdf_report(
         img_width_px, img_height_px = img.getSize()
 
         max_width = width - 2 * margin_x
-        # Reserve some space at the bottom (~70) for signatures
+        # Reserve some space at the bottom (~80) for signatures & cert
         max_height = max(y - 120, 60)
 
         scale = min(max_width / img_width_px, max_height / img_height_px)
@@ -343,7 +465,7 @@ def build_pdf_report(
         draw_height = img_height_px * scale
 
         x_pos = (width - draw_width) / 2
-        y_pos = max(y - draw_height, 90)
+        y_pos = max(y - draw_height, 120)
 
         c.setFont("Helvetica-Bold", 12)
         c.drawString(margin_x, y, "CG Diagram")
@@ -356,23 +478,66 @@ def build_pdf_report(
             preserveAspectRatio=True,
             mask='auto'
         )
+        y = y_pos - 10
+    else:
+        y -= 10
+
+    # --- Configuration / Notes ---
+    if config_notes:
+        c.setFont("Helvetica-Bold", 10)
+        c.drawString(margin_x, y, "Configuration / Notes")
+        y -= 12
+        c.setFont("Helvetica", 9)
+
+        # Simple line wrapping for notes
+        max_chars = 90
+        notes_lines = []
+        for line in config_notes.split("\n"):
+            while len(line) > max_chars:
+                notes_lines.append(line[:max_chars])
+                line = line[max_chars:]
+            notes_lines.append(line)
+
+        for line in notes_lines:
+            c.drawString(margin_x, y, line)
+            y -= 11
+            if y < 80:
+                break
+
+    # --- Certification statement ---
+    y = max(y, 80)
+    c.setFont("Helvetica-Oblique", 8)
+    c.drawString(
+        margin_x,
+        y,
+        "Certified that this aircraft has been weighed in accordance with the applicable "
+        "Weight & Balance Manual and procedures."
+    )
+    y -= 12
+    c.drawString(
+        margin_x,
+        y,
+        "This report is issued by Feras Aviation Technical Services Ltd for engineering support purposes."
+    )
 
     # --- Signature blocks at bottom of page ---
-    sig_y = 60
+    sig_y = 40
     col_width = (width - 2 * margin_x) / 3.0
 
-    def draw_signature_block(x: float, label: str, name: str):
+    def draw_signature_block(x: float, label: str, name: str, date: str):
         c.setFont("Helvetica-Bold", 10)
-        c.drawString(x, sig_y + 18, label)
-        # line
-        c.line(x, sig_y, x + col_width - 20, sig_y)
+        c.drawString(x, sig_y + 28, label)
+        # Line for signature
+        c.line(x, sig_y + 18, x + col_width - 20, sig_y + 18)
         c.setFont("Helvetica", 9)
         if name:
-            c.drawString(x, sig_y - 10, name)
+            c.drawString(x, sig_y + 6, f"Name: {name}")
+        if date:
+            c.drawString(x, sig_y - 6, f"Date: {date}")
 
-    draw_signature_block(margin_x, "Weighed by", weighed_by)
-    draw_signature_block(margin_x + col_width, "Checked by", checked_by)
-    draw_signature_block(margin_x + 2 * col_width, "Approved by", approved_by)
+    draw_signature_block(margin_x, "Weighed by", weighed_by, weighed_by_date)
+    draw_signature_block(margin_x + col_width, "Checked by", checked_by, checked_by_date)
+    draw_signature_block(margin_x + 2 * col_width, "Approved by", approved_by, approved_by_date)
 
     c.showPage()
     c.save()
@@ -391,9 +556,9 @@ st.title("Boeing 7x7 Weighing – Centre of Gravity Calculator")
 
 st.markdown(
     """
-Enter your **scale readings**, **arms from datum**, and aircraft details.  
-The app will compute total weight, CG arm, and optional %MAC,
-display a 2D diagram, and generate a PDF Weight & Balance report (with CG diagram and sign-off on page 1).
+Enter your **scale readings**, **arms from datum**, aircraft details, and adjustments.  
+The app will compute as-weighed and corrected weight & CG, display a 2D diagram, and
+generate a comprehensive PDF Weight & Balance report (with CG diagram and sign-off on page 1).
 
 > Presets are for engineering support only – always verify against your approved W&B data.
 """
@@ -468,17 +633,38 @@ wbm_reference = st.text_input(
 )
 
 st.markdown("---")
+
+# ---------- Equipment / scales info ----------
+
+st.subheader("Equipment / Scales Information")
+
+ecol1, ecol2 = st.columns(2)
+with ecol1:
+    equipment_model = st.text_input("Equipment model (scale type)", value="")
+with ecol2:
+    equipment_serial = st.text_input("Equipment serial / ID", value="")
+
+st.markdown("---")
+
+# ---------- Sign-off ----------
+
 st.subheader("Sign-off")
 
 scol1, scol2, scol3 = st.columns(3)
 with scol1:
-    weighed_by = st.text_input("Weighed by", value="")
+    weighed_by = st.text_input("Weighed by (name)", value="")
+    weighed_by_date = st.text_input("Weighed by - date", value=weighing_date)
 with scol2:
-    checked_by = st.text_input("Checked by", value="")
+    checked_by = st.text_input("Checked by (name)", value="")
+    checked_by_date = st.text_input("Checked by - date", value=weighing_date)
 with scol3:
-    approved_by = st.text_input("Approved by", value="")
+    approved_by = st.text_input("Approved by (name)", value="")
+    approved_by_date = st.text_input("Approved by - date", value=weighing_date)
 
 st.markdown("---")
+
+# ---------- Weighing Inputs ----------
+
 st.subheader("Weighing Inputs")
 
 col1, col2 = st.columns(2)
@@ -500,7 +686,7 @@ with col1:
         rmlg_w = st.number_input(f"RMLG weight ({weight_unit})", min_value=0.0, value=40000.0, step=100.0)
 
 with col2:
-    st.markdown("### Gear Arms (from datum)")
+    st.markdown("### Gear Arms & Scale Serials (from datum)")
 
     if preset["type"] == "dual_bogie":
         nlg_arm = st.number_input(
@@ -509,30 +695,39 @@ with col2:
             step=1.0,
             help="From WBM. Provided value: 268 in for B787."
         )
+        nlg_serial = st.text_input("NLG scale serial", value="")
+
         lmlg_fwd_arm = st.number_input(
             f"LMLG FWD arm ({arm_unit})",
             value=preset["lmlg_fwd_arm"],
             step=1.0,
             help="From WBM. Provided value: 1137.30 in for B787."
         )
+        lmlg_fwd_serial = st.text_input("LMLG FWD scale serial", value="")
+
         lmlg_aft_arm = st.number_input(
             f"LMLG AFT arm ({arm_unit})",
             value=preset["lmlg_aft_arm"],
             step=1.0,
             help="From WBM. Provided value: 1194.80 in for B787."
         )
+        lmlg_aft_serial = st.text_input("LMLG AFT scale serial", value="")
+
         rmlg_fwd_arm = st.number_input(
             f"RMLG FWD arm ({arm_unit})",
             value=preset["rmlg_fwd_arm"],
             step=1.0,
             help="Symmetric to LMLG FWD."
         )
+        rmlg_fwd_serial = st.text_input("RMLG FWD scale serial", value="")
+
         rmlg_aft_arm = st.number_input(
             f"RMLG AFT arm ({arm_unit})",
             value=preset["rmlg_aft_arm"],
             step=1.0,
             help="Symmetric to LMLG AFT."
         )
+        rmlg_aft_serial = st.text_input("RMLG AFT scale serial", value="")
     else:
         nlg_arm = st.number_input(
             f"NLG arm ({arm_unit})",
@@ -540,20 +735,28 @@ with col2:
             step=1.0,
             help="From WBM. Example: 93 in for B737."
         )
+        nlg_serial = st.text_input("NLG scale serial", value="")
+
         lmlg_arm = st.number_input(
             f"LMLG arm ({arm_unit})",
             value=preset["lmlg_arm"],
             step=1.0,
             help="From WBM. Example: 706.822 in for B737."
         )
+        lmlg_serial = st.text_input("LMLG scale serial", value="")
+
         rmlg_arm = st.number_input(
             f"RMLG arm ({arm_unit})",
             value=preset["rmlg_arm"],
             step=1.0,
             help="From WBM. Example: 706.822 in for B737."
         )
+        rmlg_serial = st.text_input("RMLG scale serial", value="")
 
 st.markdown("---")
+
+# ---------- MAC / CG Envelope Reference ----------
+
 st.subheader("MAC / CG Envelope Reference (optional)")
 
 col3, col4 = st.columns(2)
@@ -572,6 +775,75 @@ with col4:
         help="Mean aerodynamic chord length. Replace with real data for each type."
     )
 
+st.markdown("---")
+
+# ---------- Pitch & Adjustments ----------
+
+st.subheader("Pitch & Adjustments")
+
+pcol1, pcol2 = st.columns(2)
+with pcol1:
+    pitch_attitude_deg = st.number_input(
+        "Pitch attitude during weighing (deg)",
+        value=0.0,
+        step=0.1,
+        help="Positive = nose up. Recorded for traceability; not used directly in CG math."
+    )
+with pcol2:
+    pitch_correction = st.number_input(
+        f"Pitch correction to CG (Δarm in {arm_unit})",
+        value=0.0,
+        step=0.01,
+        help="Manual CG arm correction applied after weighing (e.g. +0.65 in)."
+    )
+
+st.markdown("### Subtractions & Additions")
+
+with st.expander("Subtractions (items present during weighing but not in final weight)", expanded=False):
+    n_sub = st.number_input(
+        "Number of subtraction items",
+        min_value=0, max_value=10, value=0, step=1, key="n_sub_items"
+    )
+    subtractions: List[Dict] = []
+    for i in range(int(n_sub)):
+        dcol1, dcol2, dcol3 = st.columns([2, 1, 1])
+        desc = dcol1.text_input("Item description", key=f"sub_desc_{i}")
+        w = dcol2.number_input(f"Weight ({weight_unit})", min_value=0.0, value=0.0, step=1.0, key=f"sub_w_{i}")
+        arm = dcol3.number_input(f"Arm ({arm_unit})", value=0.0, step=0.1, key=f"sub_arm_{i}")
+        if desc or w != 0:
+            subtractions.append({"description": desc, "weight": w, "arm": arm})
+
+with st.expander("Additions (items not present during weighing but included in final weight)", expanded=False):
+    n_add = st.number_input(
+        "Number of addition items",
+        min_value=0, max_value=10, value=0, step=1, key="n_add_items"
+    )
+    additions: List[Dict] = []
+    for i in range(int(n_add)):
+        dcol1, dcol2, dcol3 = st.columns([2, 1, 1])
+        desc = dcol1.text_input("Item description", key=f"add_desc_{i}")
+        w = dcol2.number_input(f"Weight ({weight_unit})", min_value=0.0, value=0.0, step=1.0, key=f"add_w_{i}")
+        arm = dcol3.number_input(f"Arm ({arm_unit})", value=0.0, step=0.1, key=f"add_arm_{i}")
+        if desc or w != 0:
+            additions.append({"description": desc, "weight": w, "arm": arm})
+
+st.markdown("---")
+
+# ---------- Configuration Notes ----------
+
+st.subheader("Configuration / Notes")
+
+config_notes = st.text_area(
+    "Configuration & remarks (fuel state, water, lavs, flaps, attitude, etc.)",
+    value="",
+    help="Free-text notes for aircraft configuration during weighing.",
+    height=120,
+)
+
+st.markdown("---")
+
+# ---------- Calculate ----------
+
 calculate = st.button("Calculate CG", type="primary")
 
 if calculate:
@@ -579,24 +851,44 @@ if calculate:
         # Build weighing points list depending on aircraft layout
         if preset["type"] == "dual_bogie":
             points: List[WeighPoint] = [
-                WeighPoint("NLG", nlg_w, nlg_arm),
-                WeighPoint("LMLG FWD", lmlg_fwd_w, lmlg_fwd_arm),
-                WeighPoint("LMLG AFT", lmlg_aft_w, lmlg_aft_arm),
-                WeighPoint("RMLG FWD", rmlg_fwd_w, rmlg_fwd_arm),
-                WeighPoint("RMLG AFT", rmlg_aft_w, rmlg_aft_arm),
+                WeighPoint("NLG", nlg_w, nlg_arm, nlg_serial),
+                WeighPoint("LMLG FWD", lmlg_fwd_w, lmlg_fwd_arm, lmlg_fwd_serial),
+                WeighPoint("LMLG AFT", lmlg_aft_w, lmlg_aft_arm, lmlg_aft_serial),
+                WeighPoint("RMLG FWD", rmlg_fwd_w, rmlg_fwd_arm, rmlg_fwd_serial),
+                WeighPoint("RMLG AFT", rmlg_aft_w, rmlg_aft_arm, rmlg_aft_serial),
             ]
             gear_arms = [nlg_arm, lmlg_fwd_arm, lmlg_aft_arm, rmlg_fwd_arm, rmlg_aft_arm]
             gear_labels = ["NLG", "LMLG FWD", "LMLG AFT", "RMLG FWD", "RMLG AFT"]
         else:
             points = [
-                WeighPoint("NLG", nlg_w, nlg_arm),
-                WeighPoint("LMLG", lmlg_w, lmlg_arm),
-                WeighPoint("RMLG", rmlg_w, rmlg_arm),
+                WeighPoint("NLG", nlg_w, nlg_arm, nlg_serial),
+                WeighPoint("LMLG", lmlg_w, lmlg_arm, lmlg_serial),
+                WeighPoint("RMLG", rmlg_w, rmlg_arm, rmlg_serial),
             ]
             gear_arms = [nlg_arm, lmlg_arm, rmlg_arm]
             gear_labels = ["NLG", "LMLG", "RMLG"]
 
         result = compute_cg(points, lemac_arm=lemac_arm, mac_length=mac_length)
+
+        # Compute adjustment effects
+        as_w = result.total_weight
+        as_m = result.total_moment
+        as_cg = result.cg_arm
+
+        sum_sub_w = sum(item["weight"] for item in subtractions)
+        sum_sub_m = sum(item["weight"] * item["arm"] for item in subtractions)
+        sum_add_w = sum(item["weight"] for item in additions)
+        sum_add_m = sum(item["weight"] * item["arm"] for item in additions)
+
+        pitch_corrected_m = as_m + pitch_correction * as_w
+
+        corrected_weight = as_w - sum_sub_w + sum_add_w
+        corrected_moment = pitch_corrected_m - sum_sub_m + sum_add_m
+        corrected_cg = corrected_moment / corrected_weight if corrected_weight > 0 else as_cg
+
+        corrected_mac_percent = None
+        if lemac_arm is not None and mac_length is not None and mac_length > 0 and corrected_weight > 0:
+            corrected_mac_percent = (corrected_cg - lemac_arm) / mac_length * 100.0
 
         res_col1, res_col2 = st.columns([1, 1.2])
 
@@ -605,7 +897,7 @@ if calculate:
             fig = draw_aircraft_diagram(
                 gear_arms=gear_arms,
                 gear_labels=gear_labels,
-                cg_arm=result.cg_arm,
+                cg_arm=corrected_cg,  # show final corrected CG on diagram
                 lemac_arm=lemac_arm,
                 mac_length=mac_length,
             )
@@ -620,29 +912,52 @@ if calculate:
             st.markdown("## Results")
 
             st.metric(
-                label=f"Total weight ({weight_unit})",
-                value=f"{result.total_weight:,.1f}"
+                label=f"As-weighed total weight ({weight_unit})",
+                value=f"{as_w:,.1f}"
             )
             st.metric(
-                label=f"CG arm ({arm_unit} from datum)",
-                value=f"{result.cg_arm:.2f}"
+                label=f"As-weighed CG arm ({arm_unit} from datum)",
+                value=f"{as_cg:.2f}"
+            )
+
+            st.metric(
+                label=f"Corrected weight ({weight_unit})",
+                value=f"{corrected_weight:,.1f}"
+            )
+            st.metric(
+                label=f"Corrected CG arm ({arm_unit} from datum)",
+                value=f"{corrected_cg:.2f}"
             )
 
             if result.mac_percent is not None:
                 st.metric(
-                    label="CG position (% MAC)",
+                    label="As-weighed CG (% MAC)",
                     value=f"{result.mac_percent:.2f} %"
+                )
+
+            if corrected_mac_percent is not None:
+                st.metric(
+                    label="Corrected CG (% MAC)",
+                    value=f"{corrected_mac_percent:.2f} %"
                 )
                 st.caption("Check against your approved CG envelope for this aircraft type.")
 
             # Show a small table of moments for traceability
-            st.markdown("### Moments")
+            st.markdown("### Weighing Moments")
             st.table({
                 "Point": [p.name for p in points],
+                "Scale S/N": [p.serial or "-" for p in points],
                 f"Weight ({weight_unit})": [p.weight for p in points],
                 f"Arm ({arm_unit})": [p.arm for p in points],
                 "Moment": [p.weight * p.arm for p in points],
             })
+
+            # Show totals for adjustments
+            if subtractions or additions or pitch_correction:
+                st.markdown("### Adjustments Summary")
+                st.write(f"Total subtractions: {sum_sub_w:,.1f} {weight_unit}")
+                st.write(f"Total additions: {sum_add_w:,.1f} {weight_unit}")
+                st.write(f"Pitch correction applied: {pitch_correction:.2f} {arm_unit}")
 
             # ---- PDF download button ----
             pdf_buffer = build_pdf_report(
@@ -660,9 +975,19 @@ if calculate:
                 scales_cal_date=scales_cal_date,
                 weighing_date=weighing_date,
                 wbm_reference=wbm_reference,
+                equipment_model=equipment_model,
+                equipment_serial=equipment_serial,
+                pitch_attitude_deg=pitch_attitude_deg,
+                pitch_correction=pitch_correction,
+                subtractions=subtractions,
+                additions=additions,
                 weighed_by=weighed_by,
+                weighed_by_date=weighed_by_date,
                 checked_by=checked_by,
+                checked_by_date=checked_by_date,
                 approved_by=approved_by,
+                approved_by_date=approved_by_date,
+                config_notes=config_notes,
                 cg_diagram_png=cg_buffer,
             )
 
@@ -676,4 +1001,4 @@ if calculate:
     except Exception as e:
         st.error(f"Error during calculation: {e}")
 else:
-    st.info("Select aircraft type, enter aircraft details and weighing data, then click **Calculate CG**.")
+    st.info("Select aircraft type, enter aircraft details, weighing data, adjustments, then click **Calculate CG**.")
