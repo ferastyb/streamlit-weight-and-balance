@@ -45,6 +45,23 @@ AIRCRAFT_PRESETS: Dict[str, Dict] = {
     },
 }
 
+# ---------- CG Envelope demo presets (for UI defaults) ----------
+
+ENVELOPE_PRESETS: Dict[str, Dict] = {
+    "Boeing 787": {
+        "min_weight": 250000.0,
+        "max_weight": 500000.0,
+        "fwd_limit": 15.0,
+        "aft_limit": 35.0,
+    },
+    "Boeing 737": {
+        "min_weight": 80000.0,
+        "max_weight": 160000.0,
+        "fwd_limit": 10.0,
+        "aft_limit": 30.0,
+    },
+}
+
 # ---------- Core data structures & logic ----------
 
 @dataclass
@@ -215,7 +232,6 @@ def draw_cg_envelope_plot(
     ax.set_ylabel("Weight")
     ax.set_title("CG Envelope")
 
-    # Sensible x/y limits padding
     x_min = min(fwd_limit, aft_limit) - 2
     x_max = max(fwd_limit, aft_limit) + 2
     ax.set_xlim(x_min, x_max)
@@ -302,10 +318,9 @@ def build_pdf_report(
             mask='auto'
         )
     except Exception:
-        # If logo fails, we just skip it
         pass
 
-    # Header text to the right of logo, fixed as "7x7"
+    # Header text
     c.setFont("Helvetica-Bold", 16)
     c.drawString(
         margin_x + logo_width + 20,
@@ -372,7 +387,6 @@ def build_pdf_report(
     sum_add_w = sum(item["weight"] for item in additions)
     sum_add_m = sum(item["weight"] * item["arm"] for item in additions)
 
-    # Apply pitch correction as delta in CG arm
     pitch_corrected_m = as_m + pitch_correction * as_w
 
     corrected_weight = as_w - sum_sub_w + sum_add_w
@@ -519,7 +533,6 @@ def build_pdf_report(
         img_width_px, img_height_px = img.getSize()
 
         max_width = width - 2 * margin_x
-        # Reserve some space at the bottom for envelope + signatures
         max_height = max(y - 180, 60)
 
         scale = min(max_width / img_width_px, max_height / img_height_px)
@@ -619,7 +632,6 @@ def build_pdf_report(
     def draw_signature_block(x: float, label: str, name: str, date: str):
         c.setFont("Helvetica-Bold", 10)
         c.drawString(x, sig_y + 28, label)
-        # Line for signature
         c.line(x, sig_y + 18, x + col_width - 20, sig_y + 18)
         c.setFont("Helvetica", 9)
         if name:
@@ -652,7 +664,7 @@ Enter your **scale readings**, **arms from datum**, aircraft details, envelope l
 The app computes as-weighed and corrected weight & CG, shows a side-view diagram and a CG envelope plot,
 and generates a comprehensive PDF Weight & Balance report (with diagrams and sign-off on page 1).
 
-> Presets are for engineering support only – always verify against your approved W&B data.
+> Presets and envelope limits are for **demo / engineering support** only – always verify against your approved W&B data.
 """
 )
 
@@ -696,10 +708,16 @@ aircraft_model = st.selectbox(
     help="Select aircraft model to load default arms and MAC data."
 )
 preset = AIRCRAFT_PRESETS[aircraft_model]
+env_defaults = ENVELOPE_PRESETS.get(aircraft_model, {
+    "min_weight": 0.0,
+    "max_weight": 0.0,
+    "fwd_limit": 0.0,
+    "aft_limit": 0.0,
+})
 
 st.caption(
-    "Preset arms and MAC values are illustrative (except where you provided real data). "
-    "Always confirm against your Weight & Balance Manual."
+    "Preset arms, MAC values and envelope limits are illustrative (demo) – "
+    "always confirm against your Weight & Balance Manual and CG envelope."
 )
 
 # ---------- Aircraft & weighing details ----------
@@ -765,14 +783,12 @@ with col1:
     st.markdown("### Gear Weights (measured)")
 
     if preset["type"] == "dual_bogie":
-        # 787: NLG + 4 bogies
         nlg_w = st.number_input(f"NLG weight ({weight_unit})", min_value=0.0, value=30000.0, step=100.0)
         lmlg_fwd_w = st.number_input(f"LMLG FWD weight ({weight_unit})", min_value=0.0, value=60000.0, step=100.0)
         lmlg_aft_w = st.number_input(f"LMLG AFT weight ({weight_unit})", min_value=0.0, value=60000.0, step=100.0)
         rmlg_fwd_w = st.number_input(f"RMLG FWD weight ({weight_unit})", min_value=0.0, value=60000.0, step=100.0)
         rmlg_aft_w = st.number_input(f"RMLG AFT weight ({weight_unit})", min_value=0.0, value=60000.0, step=100.0)
     else:
-        # 737: NLG + LMLG + RMLG
         nlg_w = st.number_input(f"NLG weight ({weight_unit})", min_value=0.0, value=15000.0, step=100.0)
         lmlg_w = st.number_input(f"LMLG weight ({weight_unit})", min_value=0.0, value=40000.0, step=100.0)
         rmlg_w = st.number_input(f"RMLG weight ({weight_unit})", min_value=0.0, value=40000.0, step=100.0)
@@ -871,41 +887,41 @@ st.markdown("---")
 
 # ---------- CG Envelope Limits (for plot) ----------
 
-st.subheader("CG Envelope Limits (for Weight vs %MAC plot) – optional")
+st.subheader("CG Envelope Limits (for Weight vs %MAC plot) – demo presets loaded")
 
 env_col1, env_col2 = st.columns(2)
 with env_col1:
     env_min_weight = st.number_input(
         f"Envelope minimum weight ({weight_unit})",
         min_value=0.0,
-        value=0.0,
+        value=env_defaults["min_weight"],
         step=1000.0,
-        help="Lowest weight for the CG envelope. Leave as 0 if not used."
+        help="Lowest weight for the CG envelope (demo default for selected type)."
     )
     env_fwd_limit = st.number_input(
         "Forward CG limit (% MAC)",
-        value=0.0,
+        value=env_defaults["fwd_limit"],
         step=0.1,
-        help="Forward limit of CG envelope in %MAC. Must be less than aft limit."
+        help="Forward limit of CG envelope in %MAC (demo default for selected type)."
     )
 with env_col2:
     env_max_weight = st.number_input(
         f"Envelope maximum weight ({weight_unit})",
         min_value=0.0,
-        value=0.0,
+        value=env_defaults["max_weight"],
         step=1000.0,
-        help="Highest weight for the CG envelope."
+        help="Highest weight for the CG envelope (demo default for selected type)."
     )
     env_aft_limit = st.number_input(
         "Aft CG limit (% MAC)",
-        value=0.0,
+        value=env_defaults["aft_limit"],
         step=0.1,
-        help="Aft limit of CG envelope in %MAC."
+        help="Aft limit of CG envelope in %MAC (demo default for selected type)."
     )
 
 st.caption(
-    "If envelope limits are left as zero or invalid (min >= max, fwd >= aft), "
-    "the CG envelope plot will be skipped."
+    "These values are **demo presets only**. Replace with the actual envelope from the "
+    "approved Weight & Balance Manual / CG chart for the specific aircraft."
 )
 
 st.markdown("---")
@@ -981,7 +997,6 @@ calculate = st.button("Calculate CG", type="primary")
 
 if calculate:
     try:
-        # Build weighing points list depending on aircraft layout
         if preset["type"] == "dual_bogie":
             points: List[WeighPoint] = [
                 WeighPoint("NLG", nlg_w, nlg_arm, nlg_serial),
@@ -1003,7 +1018,6 @@ if calculate:
 
         result = compute_cg(points, lemac_arm=lemac_arm, mac_length=mac_length)
 
-        # Compute adjustment effects
         as_w = result.total_weight
         as_m = result.total_moment
         as_cg = result.cg_arm
@@ -1019,7 +1033,6 @@ if calculate:
         corrected_moment = pitch_corrected_m - sum_sub_m + sum_add_m
         corrected_cg = corrected_moment / corrected_weight if corrected_weight > 0 else as_cg
 
-        # As-weighed & corrected %MAC
         as_mac_percent = None
         if lemac_arm is not None and mac_length is not None and mac_length > 0:
             as_mac_percent = (as_cg - lemac_arm) / mac_length * 100.0
@@ -1038,7 +1051,7 @@ if calculate:
             fig = draw_aircraft_diagram(
                 gear_arms=gear_arms,
                 gear_labels=gear_labels,
-                cg_arm=corrected_cg,  # show final corrected CG on diagram
+                cg_arm=corrected_cg,
                 lemac_arm=lemac_arm,
                 mac_length=mac_length,
             )
@@ -1048,7 +1061,6 @@ if calculate:
             fig.savefig(cg_buffer, format="png", bbox_inches="tight")
             cg_buffer.seek(0)
 
-            # CG Envelope plot (if limits are valid and %MAC available)
             if (
                 env_min_weight > 0
                 and env_max_weight > env_min_weight
@@ -1123,7 +1135,6 @@ if calculate:
                 st.write(f"Total additions: {sum_add_w:,.1f} {weight_unit}")
                 st.write(f"Pitch correction applied: {pitch_correction:.2f} {arm_unit}")
 
-            # ---- PDF download button ----
             pdf_buffer = build_pdf_report(
                 result=result,
                 points=points,
