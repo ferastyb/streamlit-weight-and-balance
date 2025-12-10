@@ -190,7 +190,7 @@ def build_pdf_report(
     operator: str,
     registration: str,
     aircraft_type: str,
-    weighing_place: str,
+    weighing_location: str,
     scales_cal_date: str,
     weighing_date: str,
     wbm_reference: str,
@@ -264,38 +264,46 @@ def build_pdf_report(
     c.drawString(margin_x, y, f"Website: {WEBSITE_URL}")
     y -= 20
 
-    # --- Aircraft & weighing details ---
+    # --- Aircraft & weighing details (2-column layout) ---
     c.setFont("Helvetica-Bold", 12)
     c.drawString(margin_x, y, "Aircraft & Weighing Details")
     y -= 16
 
     c.setFont("Helvetica", 10)
 
-    def draw_detail(label: str, value: str):
-        nonlocal y
-        c.drawString(margin_x, y, f"{label}: {value}")
-        y -= 12
+    # Details to be laid out in 2 columns
+    details = [
+        ("Operator", operator or "-"),
+        ("Aircraft Type", aircraft_type or "-"),
+        ("Registration", registration or "-"),
+        ("MSN", msn or "-"),
+        ("Weighing location", weighing_location or "-"),
+        ("Weighing Date", weighing_date or "-"),
+        ("Scales Calibration Date", scales_cal_date or "-"),
+        ("WBM reference", wbm_reference or "-"),
+        ("Equipment model", equipment_model or "-"),
+        ("Equipment serial", equipment_serial or "-"),
+    ]
 
-    draw_detail("Operator", operator or "-")
-    draw_detail("Aircraft Type", aircraft_type or "-")
-    draw_detail("Registration", registration or "-")
-    draw_detail("MSN", msn or "-")
-    draw_detail("Weighing Location", weighing_place or "-")
-    draw_detail("Weighing Date", weighing_date or "-")
-    draw_detail("Scales Calibration Date", scales_cal_date or "-")
-    draw_detail("WBM reference", wbm_reference or "-")
-
-    # Equipment info
-    draw_detail("Equipment model", equipment_model or "-")
-    draw_detail("Equipment serial", equipment_serial or "-")
-
-    # Pitch info
     pitch_str = f"{pitch_attitude_deg:.2f}°" if pitch_attitude_deg else "-"
-    draw_detail("Pitch attitude during weighing", pitch_str)
     corr_str = f"{pitch_correction:.2f} {arm_unit}" if pitch_correction else "0"
-    draw_detail("Pitch correction applied to CG", corr_str)
+    details.extend([
+        ("Pitch attitude during weighing", pitch_str),
+        ("Pitch correction applied to CG", corr_str),
+    ])
 
-    y -= 4
+    left_x = margin_x
+    right_x = margin_x + 260
+    row_height = 12
+
+    num_rows = (len(details) + 1) // 2
+    for i, (label, value) in enumerate(details):
+        row = i // 2
+        col = i % 2
+        y_row = y - row * row_height
+        x = left_x if col == 0 else right_x
+        c.drawString(x, y_row, f"{label}: {value}")
+    y = y - num_rows * row_height - 8
 
     # --- Compute adjustments for summary ---
     as_w = result.total_weight
@@ -622,7 +630,7 @@ with dcol2:
     registration = st.text_input("Registration", value="")
     msn = st.text_input("MSN", value="")
 with dcol3:
-    weighing_place = st.text_input("Weighing location", value="")
+    weighing_location = st.text_input("Weighing location", value="")
     scales_cal_date = st.text_input("Scales calibration date", value="")
     weighing_date = st.text_input("Weighing date", value=datetime.now().strftime("%Y-%m-%d"))
 
@@ -971,7 +979,7 @@ if calculate:
                 operator=operator,
                 registration=registration,
                 aircraft_type=aircraft_type,
-                weighing_place=weighing_place,
+                weighing_location=weighing_location,
                 scales_cal_date=scales_cal_date,
                 weighing_date=weighing_date,
                 wbm_reference=wbm_reference,
